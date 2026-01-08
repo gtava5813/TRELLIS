@@ -282,6 +282,151 @@ class TrellisImageTo3DPipeline(Pipeline):
         slat = self.sample_slat(cond, coords, slat_sampler_params)
         return self.decode_slat(slat, formats)
 
+    @torch.no_grad()
+    def run_with_style(
+        self,
+        image: Image.Image,
+        style_params: dict = None,
+        num_samples: int = 1,
+        seed: int = None,
+        sparse_structure_sampler_params: dict = {},
+        slat_sampler_params: dict = {},
+        formats: List[str] = ['mesh', 'gaussian', 'radiance_field'],
+        preprocess_image: bool = True,
+    ) -> tuple:
+        """
+        Run the pipeline with consistent style parameters.
+        
+        This method allows generating multiple 3D assets with a consistent artistic style
+        by preserving and reusing the generation parameters (seed, CFG strength, etc.).
+
+        Args:
+            image (Image.Image): The image prompt.
+            style_params (dict): Style parameters from a previous generation (from extract_style).
+                                If provided, uses these parameters for consistency.
+            num_samples (int): The number of samples to generate.
+            seed (int): The random seed. If style_params is provided and seed is None,
+                       uses the seed from style_params.
+            sparse_structure_sampler_params (dict): Additional parameters for the sparse structure sampler.
+            slat_sampler_params (dict): Additional parameters for the structured latent sampler.
+            formats (List[str]): The formats to decode the structured latent to.
+            preprocess_image (bool): Whether to preprocess the image.
+
+        Returns:
+            tuple: (outputs, style_params) - outputs dict as usual, style_params for reuse
+        
+        Example:
+            # Generate first asset and extract style
+            outputs1, style = pipeline.run_with_style(image1)
+            
+            # Apply same style to different images
+            outputs2, _ = pipeline.run_with_style(image2, style_params=style)
+            outputs3, _ = pipeline.run_with_style(image3, style_params=style)
+        """
+        # Apply style parameters if provided
+        if style_params is not None:
+            if seed is None:
+                seed = style_params.get('seed', 42)
+            # Merge style params with provided params (provided params take precedence)
+            ss_params = {**style_params.get('sparse_structure_sampler_params', {}), **sparse_structure_sampler_params}
+            slat_params = {**style_params.get('slat_sampler_params', {}), **slat_sampler_params}
+        else:
+            seed = seed if seed is not None else 42
+            ss_params = sparse_structure_sampler_params
+            slat_params = slat_sampler_params
+
+        if preprocess_image:
+            image = self.preprocess_image(image)
+        cond = self.get_cond([image])
+        torch.manual_seed(seed)
+        coords = self.sample_sparse_structure(cond, num_samples, ss_params)
+        slat = self.sample_slat(cond, coords, slat_params)
+        outputs = self.decode_slat(slat, formats)
+        
+        # Extract style parameters for reuse
+        extracted_style = {
+            'seed': seed,
+            'sparse_structure_sampler_params': {**self.sparse_structure_sampler_params, **ss_params},
+            'slat_sampler_params': {**self.slat_sampler_params, **slat_params},
+        }
+        
+        return outputs, extracted_style
+
+    @staticmethod
+    def extract_style(seed: int, sparse_structure_sampler_params: dict = None, slat_sampler_params: dict = None) -> dict:
+        """
+        Create style parameters dict for use with run_with_style.
+        
+        This is a convenience method to create style parameters without running a generation first.
+
+        Args:
+            seed (int): The random seed for reproducible style.
+            sparse_structure_sampler_params (dict): Parameters like {"steps": 12, "cfg_strength": 7.5}
+            slat_sampler_params (dict): Parameters like {"steps": 12, "cfg_strength": 3.0}
+
+        Returns:
+            dict: Style parameters dict for use with run_with_style.
+        
+        Example:
+            # Create style parameters
+            style = TrellisImageTo3DPipeline.extract_style(
+                seed=1234,
+                sparse_structure_sampler_params={"steps": 12, "cfg_strength": 7.5},
+                slat_sampler_params={"steps": 12, "cfg_strength": 3.0},
+            )
+            
+            # Apply to multiple generations
+            outputs1, _ = pipeline.run_with_style(image1, style_params=style)
+            outputs2, _ = pipeline.run_with_style(image2, style_params=style)
+        """
+        return {
+            'seed': seed,
+            'sparse_structure_sampler_params': sparse_structure_sampler_params or {},
+            'slat_sampler_params': slat_sampler_params or {},
+        }
+
+    @staticmethod
+    def interpolate_styles(style_a: dict, style_b: dict, alpha: float = 0.5) -> dict:
+        """
+        Interpolate between two styles for smooth style transitions.
+        
+        Note: Only numeric parameters (like cfg_strength) can be interpolated.
+        The seed from style_a is used as the base.
+
+        Args:
+            style_a (dict): First style parameters.
+            style_b (dict): Second style parameters.
+            alpha (float): Interpolation factor (0.0 = style_a, 1.0 = style_b).
+
+        Returns:
+            dict: Interpolated style parameters.
+        """
+        def interpolate_dict(a: dict, b: dict, alpha: float) -> dict:
+            result = {}
+            all_keys = set(a.keys()) | set(b.keys())
+            for key in all_keys:
+                val_a = a.get(key, 0)
+                val_b = b.get(key, 0)
+                if isinstance(val_a, (int, float)) and isinstance(val_b, (int, float)):
+                    result[key] = val_a * (1 - alpha) + val_b * alpha
+                else:
+                    result[key] = val_b if alpha > 0.5 else val_a
+            return result
+        
+        return {
+            'seed': style_a.get('seed', 42),  # Use seed from style_a
+            'sparse_structure_sampler_params': interpolate_dict(
+                style_a.get('sparse_structure_sampler_params', {}),
+                style_b.get('sparse_structure_sampler_params', {}),
+                alpha
+            ),
+            'slat_sampler_params': interpolate_dict(
+                style_a.get('slat_sampler_params', {}),
+                style_b.get('slat_sampler_params', {}),
+                alpha
+            ),
+        }
+
     @contextmanager
     def inject_sampler_multi_image(
         self,

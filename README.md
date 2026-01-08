@@ -199,6 +199,52 @@ python app.py
 Then, you can access the demo at the address shown in the terminal.
 
 
+### Google Colab
+
+We provide a ready-to-run Colab notebook for quick experimentation without local setup:
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/gtava5813/TRELLIS/blob/main/TRELLIS_Colab.ipynb)
+
+Or use the Python setup script:
+```python
+# In a Colab cell:
+!git clone --recurse-submodules https://github.com/gtava5813/TRELLIS.git
+%cd TRELLIS
+from setup_colab import setup_trellis
+setup_trellis()  # Full setup with CUDA extensions
+# Or: setup_trellis(install_extensions=False)  # Quick setup (faster)
+```
+
+
+**Note:** First-time setup takes ~10-15 minutes due to CUDA extension compilation.
+
+
+### Style Consistency
+
+Generate multiple 3D assets with consistent artistic style using the `run_with_style` method:
+
+```python
+from trellis.pipelines import TrellisTextTo3DPipeline
+
+pipeline = TrellisTextTo3DPipeline.from_pretrained("microsoft/TRELLIS-text-xlarge")
+pipeline.cuda()
+
+# Define style parameters
+style = TrellisTextTo3DPipeline.extract_style(
+    seed=1234,
+    sparse_structure_sampler_params={"steps": 12, "cfg_strength": 7.5},
+    slat_sampler_params={"steps": 12, "cfg_strength": 3.0},
+)
+
+# Generate multiple assets with same style
+outputs1, _ = pipeline.run_with_style("a large building", style_params=style)
+outputs2, _ = pipeline.run_with_style("a medium building", style_params=style)
+outputs3, _ = pipeline.run_with_style("a small building", style_params=style)
+```
+
+See [example_style_consistency.py](example_style_consistency.py) for more detailed examples including style extraction from generations and style interpolation.
+
+
 <!-- Dataset -->
 ## 📚 Dataset
 
